@@ -72,8 +72,8 @@ __global__ void matrix_multiplication_kernel_sharemem(const float* A, const floa
 // Each thread computes THREAD_TILE_SIZE x THREAD_TILE_SIZE result elements
 __global__ void matrix_multiplication_kernel_register_blocking(const float* A, const float* B, float* C, int M, int N, int K) {
     // Allocate shared memory for tiles of A and B
-    __shared__ float tile_A[TILE_SIZE][TILE_SIZE];
-    __shared__ float tile_B[TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
     
     // Register arrays to store intermediate results (4x4 per thread)
     float c_reg[THREAD_TILE_SIZE][THREAD_TILE_SIZE] = {0.0f};
@@ -164,8 +164,8 @@ __global__ void matrix_multiplication_kernel_register_blocking(const float* A, c
 
 __global__ void matrix_multiplication_kernel_prefetch(const float* A, const float* B, float* C, int M, int N, int K) {
     // Double buffering: use two sets of shared memory tiles
-    __shared__ float tile_A[2][TILE_SIZE][TILE_SIZE];
-    __shared__ float tile_B[2][TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_A[2][TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_B[2][TILE_SIZE][TILE_SIZE + 1];
     
     // Register arrays to store intermediate results (2x2 per thread)
     float c_reg[THREAD_TILE_SIZE][THREAD_TILE_SIZE] = {0.0f};
