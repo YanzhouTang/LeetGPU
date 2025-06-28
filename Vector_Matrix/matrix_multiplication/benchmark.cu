@@ -7,8 +7,10 @@
 #include <iomanip>
 
 // Include kernel definitions
-#define TILE_SIZE 32
-#define THREAD_TILE_SIZE 4
+#define TILE_SIZE 64
+#define THREAD_TILE_SIZE 8
+#define PREFETCH_TILE_SIZE 32
+#define PREFETCH_THREAD_TILE_SIZE 4
 #define SHARED_TILE_SIZE 16
 
 // Forward declarations of kernels from solution.cu
@@ -165,9 +167,12 @@ BenchmarkResult benchmarkKernel(const std::string& name,
     } else if (name.find("shared_memory") != std::string::npos) {
         threadsPerBlock = dim3(SHARED_TILE_SIZE, SHARED_TILE_SIZE);
         blocksPerGrid = dim3((K + SHARED_TILE_SIZE - 1) / SHARED_TILE_SIZE, (M + SHARED_TILE_SIZE - 1) / SHARED_TILE_SIZE);
-    } else {  // register_blocking or prefetch
+    } else if (name.find("register_blocking") != std::string::npos) {  // register_blocking or prefetch
         threadsPerBlock = dim3(TILE_SIZE / THREAD_TILE_SIZE, TILE_SIZE / THREAD_TILE_SIZE);
         blocksPerGrid = dim3((K + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
+    } else if (name.find("prefetch") != std::string::npos) {
+        threadsPerBlock = dim3(PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE, PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE);
+        blocksPerGrid = dim3((K + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE, (M + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE);
     }
     
     std::cout << "Testing " << name << " with grid(" << blocksPerGrid.x << "," << blocksPerGrid.y 

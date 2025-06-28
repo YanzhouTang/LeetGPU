@@ -1,7 +1,9 @@
 #include <cuda_runtime.h>
 
-#define TILE_SIZE 32
-#define THREAD_TILE_SIZE 4  // Each thread computes a 2x2 result tile
+#define TILE_SIZE 64
+#define THREAD_TILE_SIZE 8  // Each thread computes a 2x2 result tile
+#define PREFETCH_TILE_SIZE 32
+#define PREFETCH_THREAD_TILE_SIZE 4
 #define SHARED_TILE_SIZE 16  // Separate tile size for shared memory version
 
 extern "C" {
@@ -93,8 +95,8 @@ __global__ void matrix_multiplication_kernel_register_blocking(const float* A, c
         // Load A tile: each thread loads a 2x2 sub-block
         for (int i = 0; i < THREAD_TILE_SIZE; i++) {
             for (int j = 0; j < THREAD_TILE_SIZE; j++) {
-                int load_row = ty * THREAD_TILE_SIZE + i;
-                int load_col = tx * THREAD_TILE_SIZE + j;
+                int load_row = ty + i * TILE_SIZE / THREAD_TILE_SIZE ;
+                int load_col = tx + j * TILE_SIZE / THREAD_TILE_SIZE ;
                 int global_row = block_row + load_row;
                 int global_col = tile * TILE_SIZE + load_col;
                 
@@ -164,34 +166,34 @@ __global__ void matrix_multiplication_kernel_register_blocking(const float* A, c
 
 __global__ void matrix_multiplication_kernel_prefetch(const float* A, const float* B, float* C, int M, int N, int K) {
     // Double buffering: use two sets of shared memory tiles
-    __shared__ float tile_A[2][TILE_SIZE][TILE_SIZE + 1];
-    __shared__ float tile_B[2][TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_A[2][PREFETCH_TILE_SIZE][PREFETCH_TILE_SIZE + 1];
+    __shared__ float tile_B[2][PREFETCH_TILE_SIZE][PREFETCH_TILE_SIZE + 1];
     
     // Register arrays to store intermediate results (2x2 per thread)
-    float c_reg[THREAD_TILE_SIZE][THREAD_TILE_SIZE] = {0.0f};
+    float c_reg[PREFETCH_THREAD_TILE_SIZE][PREFETCH_THREAD_TILE_SIZE] = {0.0f};
     
     // Calculate thread's starting position in result matrix
-    int block_row = blockIdx.y * TILE_SIZE;
-    int block_col = blockIdx.x * TILE_SIZE;
-    int thread_row = threadIdx.y * THREAD_TILE_SIZE;
-    int thread_col = threadIdx.x * THREAD_TILE_SIZE;
+    int block_row = blockIdx.y * PREFETCH_TILE_SIZE;
+    int block_col = blockIdx.x * PREFETCH_TILE_SIZE;
+    int thread_row = threadIdx.y * PREFETCH_THREAD_TILE_SIZE;
+    int thread_col = threadIdx.x * PREFETCH_THREAD_TILE_SIZE;
     
     // Thread indices for loading
     int ty = threadIdx.y;
     int tx = threadIdx.x;
     
-    int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
+    int num_tiles = (N + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE;
     
     // Load first tile (tile 0) into buffer 0
     int buffer_idx = 0;
     if (num_tiles > 0) {
         // Load A tile: each thread loads a 2x2 sub-block
-        for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-            for (int j = 0; j < THREAD_TILE_SIZE; j++) {
-                int load_row = ty * THREAD_TILE_SIZE + i;
-                int load_col = tx * THREAD_TILE_SIZE + j;
+        for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+            for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
+                int load_row = ty * PREFETCH_THREAD_TILE_SIZE + i;
+                int load_col = tx * PREFETCH_THREAD_TILE_SIZE + j;
                 int global_row = block_row + load_row;
-                int global_col = 0 * TILE_SIZE + load_col;  // tile = 0
+                int global_col = 0 * PREFETCH_TILE_SIZE + load_col;  // tile = 0
                 
                 if (global_row < M && global_col < N) {
                     tile_A[buffer_idx][load_row][load_col] = A[global_row * N + global_col];
@@ -202,11 +204,11 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
         }
         
         // Load B tile: each thread loads a 2x2 sub-block
-        for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-            for (int j = 0; j < THREAD_TILE_SIZE; j++) {
-                int load_row = ty * THREAD_TILE_SIZE + i;
-                int load_col = tx * THREAD_TILE_SIZE + j;
-                int global_row = 0 * TILE_SIZE + load_row;  // tile = 0
+        for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+            for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
+                int load_row = ty * PREFETCH_THREAD_TILE_SIZE + i;
+                int load_col = tx * PREFETCH_THREAD_TILE_SIZE + j;
+                int global_row = 0 * PREFETCH_TILE_SIZE + load_row;  // tile = 0
                 int global_col = block_col + load_col;
                 
                 if (global_row < N && global_col < K) {
@@ -228,12 +230,12 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
         // Prefetch next tile while computing current tile
         if (tile + 1 < num_tiles) {
             // Load next A tile: each thread loads a 2x2 sub-block
-            for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-                for (int j = 0; j < THREAD_TILE_SIZE; j++) {
-                    int load_row = ty * THREAD_TILE_SIZE + i;
-                    int load_col = tx * THREAD_TILE_SIZE + j;
+            for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+                for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
+                    int load_row = ty * PREFETCH_THREAD_TILE_SIZE + i;
+                    int load_col = tx * PREFETCH_THREAD_TILE_SIZE + j;
                     int global_row = block_row + load_row;
-                    int global_col = (tile + 1) * TILE_SIZE + load_col;
+                    int global_col = (tile + 1) * PREFETCH_TILE_SIZE + load_col;
                     
                     if (global_row < M && global_col < N) {
                         tile_A[prefetch_buffer][load_row][load_col] = A[global_row * N + global_col];
@@ -244,11 +246,11 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
             }
             
             // Load next B tile: each thread loads a 2x2 sub-block
-            for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-                for (int j = 0; j < THREAD_TILE_SIZE; j++) {
-                    int load_row = ty * THREAD_TILE_SIZE + i;
-                    int load_col = tx * THREAD_TILE_SIZE + j;
-                    int global_row = (tile + 1) * TILE_SIZE + load_row;
+            for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+                for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
+                    int load_row = ty * PREFETCH_THREAD_TILE_SIZE + i;
+                    int load_col = tx * PREFETCH_THREAD_TILE_SIZE + j;
+                    int global_row = (tile + 1) * PREFETCH_TILE_SIZE + load_row;
                     int global_col = block_col + load_col;
                     
                     if (global_row < N && global_col < K) {
@@ -261,22 +263,22 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
         }
         
         // Compute using current tile (overlap with prefetch)
-        for (int k = 0; k < TILE_SIZE; k++) {
+        for (int k = 0; k < PREFETCH_TILE_SIZE; k++) {
             // Load A and B values into registers from compute buffer
-            float a_reg[THREAD_TILE_SIZE];
-            float b_reg[THREAD_TILE_SIZE];
+            float a_reg[PREFETCH_THREAD_TILE_SIZE];
+            float b_reg[PREFETCH_THREAD_TILE_SIZE];
             
-            for (int i = 0; i < THREAD_TILE_SIZE; i++) {
+            for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
                 a_reg[i] = tile_A[compute_buffer][thread_row + i][k];
             }
             
-            for (int j = 0; j < THREAD_TILE_SIZE; j++) {
+            for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
                 b_reg[j] = tile_B[compute_buffer][k][thread_col + j];
             }
             
             // Compute outer product and accumulate
-            for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-                for (int j = 0; j < THREAD_TILE_SIZE; j++) {
+            for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+                for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
                     c_reg[i][j] += a_reg[i] * b_reg[j];
                 }
             }
@@ -289,8 +291,8 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
     }
     
     // Write results from registers to global memory
-    for (int i = 0; i < THREAD_TILE_SIZE; i++) {
-        for (int j = 0; j < THREAD_TILE_SIZE; j++) {
+    for (int i = 0; i < PREFETCH_THREAD_TILE_SIZE; i++) {
+        for (int j = 0; j < PREFETCH_THREAD_TILE_SIZE; j++) {
             int global_row = block_row + thread_row + i;
             int global_col = block_col + thread_col + j;
             
@@ -305,8 +307,8 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
 
 void solve(const float* A, const float* B, float* C, int M, int N, int K) {
     // For register blocking: 8x8 threads, each thread computes 2x2 elements
-    dim3 threadsPerBlock(TILE_SIZE / THREAD_TILE_SIZE, TILE_SIZE / THREAD_TILE_SIZE);  // 8x8 threads per block
-    dim3 blocksPerGrid((K + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
+    dim3 threadsPerBlock(PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE, PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE);  // 8x8 threads per block
+    dim3 blocksPerGrid((K + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE, (M + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE);
     
     // Use register blocking optimized version
     matrix_multiplication_kernel_prefetch<<<blocksPerGrid, threadsPerBlock>>>(A, B, C, M, N, K);
