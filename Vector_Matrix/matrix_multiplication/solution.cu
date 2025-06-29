@@ -1,10 +1,21 @@
 #include <cuda_runtime.h>
 
 #define TILE_SIZE 64
-#define THREAD_TILE_SIZE 8  // Each thread computes a 2x2 result tile
+#define THREAD_TILE_SIZE 4  // Each thread computes a 2x2 result tile
 #define PREFETCH_TILE_SIZE 32
 #define PREFETCH_THREAD_TILE_SIZE 4
 #define SHARED_TILE_SIZE 16  // Separate tile size for shared memory version
+
+const int BM = 128;
+const int BN = 128;
+const int BK = 8;
+const int M_WARP_TILE = BM/2;
+const int N_WARP_TILE = BN/4;
+const int TM = 8;
+const int TN = 8;
+
+#define OFFSET(row, col, ld) ((row) * (ld) + (col))
+#define FLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
 
 extern "C" {
 
@@ -302,6 +313,139 @@ __global__ void matrix_multiplication_kernel_prefetch(const float* A, const floa
         }
     }
 }
+
+
+__global__ void gemm_kernel(
+    const float * a, const float * b, float * c,
+     int M,  int N,  int K) {
+
+
+
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int tid = ty * blockDim.x + tx;   //relative id in this block
+
+    const int warp_num = tid/32;
+    const int warp_n = warp_num%4;
+    const int warp_m = warp_num/4;
+    const int mma_num = tid%32;
+    const int mma_n = mma_num%4;
+    const int mma_m = mma_num/4;
+
+
+
+    //use for one block
+    __shared__ float s_a[BK][BM];       //128*8
+    __shared__ float s_b[BK][BN];       //8*128
+
+    float r_c[8][8] = {0.0};          //use only for one thread
+    float a_fragment[4*2];
+    float b_fragment[4*2];
+
+    //relative address
+    //deal with data_per_thread data a thread, so that a block can complete part of gemm
+    int load_a_smem_m = tid % 32;  
+    int load_a_smem_k = tid / 32;  
+    int load_b_smem_n = tid % 32;   
+    int load_b_smem_k = tid/32;  
+
+    int load_a_gmem_m = by * BM + load_a_smem_m;  // global row of a
+    int load_b_gmem_n = bx * BN + load_b_smem_n;  // global col of b
+
+
+    //k is devided by dk to (K+BK-1)/BK part
+    for (int bk = 0; bk < (N + BK - 1) / BK; bk++) {
+        //load data from global mem to share mem
+        int load_a_gmem_k = bk * BK + load_a_smem_k;   // global col of a
+        // int load_a_gmem_addr = OFFSET(load_a_gmem_k, load_a_gmem_m, M);         //row col row_length
+        int load_a_gmem_addr = OFFSET(load_a_gmem_m, load_a_gmem_k, N);         //row col row_length
+        int load_a_gmem_addr2 = OFFSET((load_a_gmem_m+32), load_a_gmem_k, N);         //row col row_length
+        int load_a_gmem_addr3 = OFFSET((load_a_gmem_m+32*2), load_a_gmem_k, N);         //row col row_length
+        int load_a_gmem_addr4 = OFFSET((load_a_gmem_m+32*3), load_a_gmem_k, N);         //row col row_length
+        //float tmp[4];
+        // FLOAT4(tmp)=FLOAT4(a[load_a_gmem_addr]);
+        // #pragma unroll
+        // for (int i=0;i<data_per_thread;i++) {
+        //     s_a[load_a_smem_k+i][load_a_smem_m]= tmp[i];
+        //     //s_a[load_a_smem_k+i][load_a_smem_m]= a[load_a_gmem_addr+i];
+        // }        
+        //another way
+        s_a[load_a_smem_k][load_a_smem_m]= a[load_a_gmem_addr];
+        s_a[load_a_smem_k][load_a_smem_m+32]= a[load_a_gmem_addr2];
+        s_a[load_a_smem_k][load_a_smem_m+32*2]= a[load_a_gmem_addr3];
+        s_a[load_a_smem_k][load_a_smem_m+32*3]= a[load_a_gmem_addr4];
+
+        int load_b_gmem_k = bk * BK + load_b_smem_k;   // global row of b
+        int load_b_gmem_addr = OFFSET(load_b_gmem_k, load_b_gmem_n, K);         //row col row_length
+        // FLOAT4(tmp)=FLOAT4(b[load_b_gmem_addr]);
+        // #pragma unroll
+        // for (int i=0;i<data_per_thread;i++) {
+        //     s_b[load_b_smem_k+i][load_b_smem_n] = tmp[i];
+        //     //s_b[load_b_smem_k][load_b_smem_n+i] = b[load_b_gmem_addr+i];
+        // }
+        s_b[load_b_smem_k][load_b_smem_n] = b[load_b_gmem_addr];
+        s_b[load_b_smem_k][load_b_smem_n+32] = b[load_b_gmem_addr+32];
+        s_b[load_b_smem_k][load_b_smem_n+32*2] = b[load_b_gmem_addr+32*2];
+        s_b[load_b_smem_k][load_b_smem_n+32*3] = b[load_b_gmem_addr+32*3];
+        
+
+        __syncthreads();
+
+        //mma part
+        //wrap tile first, N:4, M:2
+        //register to restore fragment
+        //thread tile
+        #pragma unroll
+        for(int warp_k = 0; warp_k < BK; warp_k++) {
+            FLOAT4(a_fragment[0])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4]);
+            FLOAT4(a_fragment[4])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+M_WARP_TILE/2]);
+            FLOAT4(b_fragment[0])=FLOAT4(s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4]);
+            FLOAT4(b_fragment[4])=FLOAT4(s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+N_WARP_TILE/2]);
+            
+            #pragma unroll
+            for(int n=0; n< 4 ; n++) {
+                for(int m=0; m < 4 ; m++) {
+                    r_c[m][n]                   += a_fragment[m] * b_fragment[n];
+                    r_c[m][n + 4]               += a_fragment[m] * b_fragment[n + 4];
+                    r_c[m+4][n]                 += a_fragment[m + 4] * b_fragment[n];
+                    r_c[m+4][n+4]               += a_fragment[m + 4] * b_fragment[n + 4];
+                }
+            }
+            // #pragma unroll
+            // for(int i=0;i<4;i++) {
+            //     a_fragment[i]=s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+i];
+            //     a_fragment[i+4]=s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+i+M_WARP_TILE/2];
+            // }
+            // #pragma unroll
+            // for(int i=0;i<4;i++) {
+            //     b_fragment[i]=s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+i];
+            //     b_fragment[i+4]=s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+i+N_WARP_TILE/2];
+            // }
+            
+
+        }
+
+        __syncthreads();
+    }
+
+    //write to mem
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        int store_c_gmem_m = by * BM + warp_m * M_WARP_TILE + mma_m * 4 + i;                 //global rol of output
+        int store_c_gmem_n = bx * BN + warp_n * N_WARP_TILE + mma_n * 4;             //global col of output
+        int store_c_gmem_addr = OFFSET(store_c_gmem_m, store_c_gmem_n, K);
+        FLOAT4(c[store_c_gmem_addr]) = FLOAT4(r_c[i][0]);
+        FLOAT4(c[store_c_gmem_addr+M_WARP_TILE/2*K]) = FLOAT4(r_c[i+4][0]);
+        FLOAT4(c[store_c_gmem_addr+N_WARP_TILE/2]) = FLOAT4(r_c[i][4]);
+        FLOAT4(c[store_c_gmem_addr+M_WARP_TILE/2*K+N_WARP_TILE/2]) = FLOAT4(r_c[i+4][4]);
+
+    }
+}
+
+
+
 
 } // extern "C"
 

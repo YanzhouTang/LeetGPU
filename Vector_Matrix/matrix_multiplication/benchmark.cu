@@ -8,10 +8,12 @@
 
 // Include kernel definitions
 #define TILE_SIZE 64
-#define THREAD_TILE_SIZE 8
+#define THREAD_TILE_SIZE 4
 #define PREFETCH_TILE_SIZE 32
 #define PREFETCH_THREAD_TILE_SIZE 4
 #define SHARED_TILE_SIZE 16
+const int BM = 128;
+const int BN = 128;
 
 // Forward declarations of kernels from solution.cu
 extern "C" {
@@ -19,6 +21,7 @@ extern "C" {
     __global__ void matrix_multiplication_kernel_sharemem(const float* A, const float* B, float* C, int M, int N, int K);
     __global__ void matrix_multiplication_kernel_register_blocking(const float* A, const float* B, float* C, int M, int N, int K);
     __global__ void matrix_multiplication_kernel_prefetch(const float* A, const float* B, float* C, int M, int N, int K);
+    __global__ void gemm_kernel(const float* A, const float* B, float* C, int M, int N, int K);
 }
 
 // Utility functions
@@ -174,6 +177,10 @@ BenchmarkResult benchmarkKernel(const std::string& name,
         threadsPerBlock = dim3(PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE, PREFETCH_TILE_SIZE / PREFETCH_THREAD_TILE_SIZE);
         blocksPerGrid = dim3((K + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE, (M + PREFETCH_TILE_SIZE - 1) / PREFETCH_TILE_SIZE);
     }
+    else if (name.find("gemm") != std::string::npos) {
+        threadsPerBlock = dim3(16, 16);
+        blocksPerGrid = dim3((K + BN - 1) / BN, (M + BM - 1) / BM);
+    }
     
     std::cout << "Testing " << name << " with grid(" << blocksPerGrid.x << "," << blocksPerGrid.y 
               << ") block(" << threadsPerBlock.x << "," << threadsPerBlock.y << ")" << std::endl;
@@ -281,6 +288,9 @@ int main(int argc, char** argv) {
                                      d_A, d_B, d_C, reference, M, N, K));
     
     results.push_back(benchmarkKernel("prefetch", matrix_multiplication_kernel_prefetch,
+                                     d_A, d_B, d_C, reference, M, N, K));
+    
+    results.push_back(benchmarkKernel("gemm", gemm_kernel,
                                      d_A, d_B, d_C, reference, M, N, K));
     
     // Print results
