@@ -4,7 +4,7 @@
 NVCC = nvcc
 
 # Compiler flags
-NVCC_FLAGS = -std=c++14 -O3 -arch=sm_70 -lcublas
+NVCC_FLAGS = -std=c++14 -O3 -arch=sm_86 -lcublas
 
 # Source files
 SOLUTION_SRC = solution.cu

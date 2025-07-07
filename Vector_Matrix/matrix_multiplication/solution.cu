@@ -336,9 +336,9 @@ __global__ void gemm_kernel(
 
 
 
-    //use for one block
-    __shared__ float s_a[BK][BM];       //128*8
-    __shared__ float s_b[BK][BN];       //8*128
+    //use for one block - double buffering for prefetch
+    __shared__ float s_a[2][BK][BM];       //128*8 with double buffering
+    __shared__ float s_b[2][BK][BN];       //8*128 with double buffering
 
     float r_c[8][8] = {0.0};          //use only for one thread
     float a_fragment[4*2];
@@ -354,55 +354,47 @@ __global__ void gemm_kernel(
     int load_a_gmem_m = by * BM + load_a_smem_m;  // global row of a
     int load_b_gmem_n = bx * BN + load_b_smem_n;  // global col of b
 
+    int buffer_idx = 0;  // current buffer index
+    int num_tiles = (N + BK - 1) / BK;
+
+    // Pre-load first tile into buffer 0
+    int load_a_gmem_k = 0 * BK + load_a_smem_k;
+    int load_a_gmem_addr = OFFSET(load_a_gmem_m, load_a_gmem_k, N);
+    int load_a_gmem_addr2 = OFFSET((load_a_gmem_m+32), load_a_gmem_k, N);
+    int load_a_gmem_addr3 = OFFSET((load_a_gmem_m+32*2), load_a_gmem_k, N);
+    int load_a_gmem_addr4 = OFFSET((load_a_gmem_m+32*3), load_a_gmem_k, N);
+    
+    s_a[0][load_a_smem_k][load_a_smem_m] = a[load_a_gmem_addr];
+    s_a[0][load_a_smem_k][load_a_smem_m+32] = a[load_a_gmem_addr2];
+    s_a[0][load_a_smem_k][load_a_smem_m+64] = a[load_a_gmem_addr3];
+    s_a[0][load_a_smem_k][load_a_smem_m+96] = a[load_a_gmem_addr4];
+
+    int load_b_gmem_k = 0 * BK + load_b_smem_k;
+    int load_b_gmem_addr = OFFSET(load_b_gmem_k, load_b_gmem_n, K);
+    
+    s_b[0][load_b_smem_k][load_b_smem_n] = b[load_b_gmem_addr];
+    s_b[0][load_b_smem_k][load_b_smem_n+32] = b[load_b_gmem_addr+32];
+    s_b[0][load_b_smem_k][load_b_smem_n+64] = b[load_b_gmem_addr+64];
+    s_b[0][load_b_smem_k][load_b_smem_n+96] = b[load_b_gmem_addr+96];
+
+    __syncthreads();
 
     //k is devided by dk to (K+BK-1)/BK part
-    for (int bk = 0; bk < (N + BK - 1) / BK; bk++) {
-        //load data from global mem to share mem
-        int load_a_gmem_k = bk * BK + load_a_smem_k;   // global col of a
-        // int load_a_gmem_addr = OFFSET(load_a_gmem_k, load_a_gmem_m, M);         //row col row_length
-        int load_a_gmem_addr = OFFSET(load_a_gmem_m, load_a_gmem_k, N);         //row col row_length
-        int load_a_gmem_addr2 = OFFSET((load_a_gmem_m+32), load_a_gmem_k, N);         //row col row_length
-        int load_a_gmem_addr3 = OFFSET((load_a_gmem_m+32*2), load_a_gmem_k, N);         //row col row_length
-        int load_a_gmem_addr4 = OFFSET((load_a_gmem_m+32*3), load_a_gmem_k, N);         //row col row_length
-        //float tmp[4];
-        // FLOAT4(tmp)=FLOAT4(a[load_a_gmem_addr]);
-        // #pragma unroll
-        // for (int i=0;i<data_per_thread;i++) {
-        //     s_a[load_a_smem_k+i][load_a_smem_m]= tmp[i];
-        //     //s_a[load_a_smem_k+i][load_a_smem_m]= a[load_a_gmem_addr+i];
-        // }        
-        //another way
-        s_a[load_a_smem_k][load_a_smem_m]= a[load_a_gmem_addr];
-        s_a[load_a_smem_k][load_a_smem_m+32]= a[load_a_gmem_addr2];
-        s_a[load_a_smem_k][load_a_smem_m+32*2]= a[load_a_gmem_addr3];
-        s_a[load_a_smem_k][load_a_smem_m+32*3]= a[load_a_gmem_addr4];
+    // Main loop: compute current tile, then load next tile
+    for (int bk = 0; bk < num_tiles - 1; bk++) {
+        int compute_buffer = buffer_idx;
+        int prefetch_buffer = 1 - buffer_idx;
 
-        int load_b_gmem_k = bk * BK + load_b_smem_k;   // global row of b
-        int load_b_gmem_addr = OFFSET(load_b_gmem_k, load_b_gmem_n, K);         //row col row_length
-        // FLOAT4(tmp)=FLOAT4(b[load_b_gmem_addr]);
-        // #pragma unroll
-        // for (int i=0;i<data_per_thread;i++) {
-        //     s_b[load_b_smem_k+i][load_b_smem_n] = tmp[i];
-        //     //s_b[load_b_smem_k][load_b_smem_n+i] = b[load_b_gmem_addr+i];
-        // }
-        s_b[load_b_smem_k][load_b_smem_n] = b[load_b_gmem_addr];
-        s_b[load_b_smem_k][load_b_smem_n+32] = b[load_b_gmem_addr+32];
-        s_b[load_b_smem_k][load_b_smem_n+32*2] = b[load_b_gmem_addr+32*2];
-        s_b[load_b_smem_k][load_b_smem_n+32*3] = b[load_b_gmem_addr+32*3];
-        
-
-        __syncthreads();
-
-        //mma part
+        //mma part - compute using current buffer
         //wrap tile first, N:4, M:2
         //register to restore fragment
         //thread tile
         #pragma unroll
         for(int warp_k = 0; warp_k < 8; warp_k++) {
-            FLOAT4(a_fragment[0])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4]);
-            FLOAT4(a_fragment[4])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+M_WARP_TILE/2]);
-            FLOAT4(b_fragment[0])=FLOAT4(s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4]);
-            FLOAT4(b_fragment[4])=FLOAT4(s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+N_WARP_TILE/2]);
+            FLOAT4(a_fragment[0])=FLOAT4(s_a[compute_buffer][warp_k][warp_m*(M_WARP_TILE)+mma_m*4]);
+            FLOAT4(a_fragment[4])=FLOAT4(s_a[compute_buffer][warp_k][warp_m*(M_WARP_TILE)+mma_m*4+M_WARP_TILE/2]);
+            FLOAT4(b_fragment[0])=FLOAT4(s_b[compute_buffer][warp_k][warp_n*(N_WARP_TILE)+mma_n*4]);
+            FLOAT4(b_fragment[4])=FLOAT4(s_b[compute_buffer][warp_k][warp_n*(N_WARP_TILE)+mma_n*4+N_WARP_TILE/2]);
             
             #pragma unroll
             for(int n=0; n< 4 ; n++) {
@@ -413,21 +405,51 @@ __global__ void gemm_kernel(
                     r_c[m+4][n+4]               += a_fragment[m + 4] * b_fragment[n + 4];
                 }
             }
-            // #pragma unroll
-            // for(int i=0;i<4;i++) {
-            //     a_fragment[i]=s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+i];
-            //     a_fragment[i+4]=s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+i+M_WARP_TILE/2];
-            // }
-            // #pragma unroll
-            // for(int i=0;i<4;i++) {
-            //     b_fragment[i]=s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+i];
-            //     b_fragment[i+4]=s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4+i+N_WARP_TILE/2];
-            // }
-            
-
         }
 
+        // Load next tile
+        int load_a_gmem_k = (bk + 1) * BK + load_a_smem_k;
+        int load_a_gmem_addr = OFFSET(load_a_gmem_m, load_a_gmem_k, N);
+        int load_a_gmem_addr2 = OFFSET((load_a_gmem_m+32), load_a_gmem_k, N);
+        int load_a_gmem_addr3 = OFFSET((load_a_gmem_m+32*2), load_a_gmem_k, N);
+        int load_a_gmem_addr4 = OFFSET((load_a_gmem_m+32*3), load_a_gmem_k, N);
+        
+        s_a[prefetch_buffer][load_a_smem_k][load_a_smem_m] = a[load_a_gmem_addr];
+        s_a[prefetch_buffer][load_a_smem_k][load_a_smem_m+32] = a[load_a_gmem_addr2];
+        s_a[prefetch_buffer][load_a_smem_k][load_a_smem_m+64] = a[load_a_gmem_addr3];
+        s_a[prefetch_buffer][load_a_smem_k][load_a_smem_m+96] = a[load_a_gmem_addr4];
+
+        int load_b_gmem_k = (bk + 1) * BK + load_b_smem_k;
+        int load_b_gmem_addr = OFFSET(load_b_gmem_k, load_b_gmem_n, K);
+        
+        s_b[prefetch_buffer][load_b_smem_k][load_b_smem_n] = b[load_b_gmem_addr];
+        s_b[prefetch_buffer][load_b_smem_k][load_b_smem_n+32] = b[load_b_gmem_addr+32];
+        s_b[prefetch_buffer][load_b_smem_k][load_b_smem_n+64] = b[load_b_gmem_addr+64];
+        s_b[prefetch_buffer][load_b_smem_k][load_b_smem_n+96] = b[load_b_gmem_addr+96];
+
+        // Switch buffers for next iteration
+        buffer_idx = prefetch_buffer;
         __syncthreads();
+    }
+
+    // Compute the last tile
+    int compute_buffer = buffer_idx;
+    #pragma unroll
+    for(int warp_k = 0; warp_k < 8; warp_k++) {
+        FLOAT4(a_fragment[0])=FLOAT4(s_a[compute_buffer][warp_k][warp_m*(M_WARP_TILE)+mma_m*4]);
+        FLOAT4(a_fragment[4])=FLOAT4(s_a[compute_buffer][warp_k][warp_m*(M_WARP_TILE)+mma_m*4+M_WARP_TILE/2]);
+        FLOAT4(b_fragment[0])=FLOAT4(s_b[compute_buffer][warp_k][warp_n*(N_WARP_TILE)+mma_n*4]);
+        FLOAT4(b_fragment[4])=FLOAT4(s_b[compute_buffer][warp_k][warp_n*(N_WARP_TILE)+mma_n*4+N_WARP_TILE/2]);
+        
+        #pragma unroll
+        for(int n=0; n< 4 ; n++) {
+            for(int m=0; m < 4 ; m++) {
+                r_c[m][n]                   += a_fragment[m] * b_fragment[n];
+                r_c[m][n + 4]               += a_fragment[m] * b_fragment[n + 4];
+                r_c[m+4][n]                 += a_fragment[m + 4] * b_fragment[n];
+                r_c[m+4][n+4]               += a_fragment[m + 4] * b_fragment[n + 4];
+            }
+        }
     }
 
     //write to mem
