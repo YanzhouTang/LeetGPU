@@ -398,7 +398,7 @@ __global__ void gemm_kernel(
         //register to restore fragment
         //thread tile
         #pragma unroll
-        for(int warp_k = 0; warp_k < BK; warp_k++) {
+        for(int warp_k = 0; warp_k < 8; warp_k++) {
             FLOAT4(a_fragment[0])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4]);
             FLOAT4(a_fragment[4])=FLOAT4(s_a[warp_k][warp_m*(M_WARP_TILE)+mma_m*4+M_WARP_TILE/2]);
             FLOAT4(b_fragment[0])=FLOAT4(s_b[warp_k][warp_n*(N_WARP_TILE)+mma_n*4]);

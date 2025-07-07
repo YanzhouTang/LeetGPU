@@ -80,6 +80,9 @@ profile-register: $(TARGET) $(PROFILE_DIR)
 profile-prefetch: $(TARGET) $(PROFILE_DIR)
 	ncu --set full -k matrix_multiplication_kernel_prefetch -o $(PROFILE_DIR)/profile_prefetch ./$(TARGET) $(M) $(N) $(K)
 
+profile-gemm: $(TARGET) $(PROFILE_DIR)
+	ncu --set full -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm ./$(TARGET) $(M) $(N) $(K)
+
 # Comprehensive profiling (multiple analysis files per kernel)
 profile-naive-full: $(TARGET) $(PROFILE_DIR)
 	@echo "Profiling naive kernel with comprehensive metrics..."
@@ -112,6 +115,14 @@ profile-prefetch-full: $(TARGET) $(PROFILE_DIR)
 	ncu --metrics "$(MEMORY_METRICS)" -k matrix_multiplication_kernel_prefetch -o $(PROFILE_DIR)/profile_prefetch_memory ./$(TARGET) $(M) $(N) $(K)
 	ncu --metrics "$(OCCUPANCY_METRICS)" -k matrix_multiplication_kernel_prefetch -o $(PROFILE_DIR)/profile_prefetch_occupancy ./$(TARGET) $(M) $(N) $(K)
 	ncu --metrics "$(CACHE_METRICS)" -k matrix_multiplication_kernel_prefetch -o $(PROFILE_DIR)/profile_prefetch_cache ./$(TARGET) $(M) $(N) $(K)
+
+profile-gemm-full: $(TARGET) $(PROFILE_DIR)
+	@echo "Profiling gemm kernel with comprehensive metrics..."
+	ncu --set full -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm_full ./$(TARGET) $(M) $(N) $(K)
+	ncu --metrics "$(COMPUTE_METRICS)" -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm_compute ./$(TARGET) $(M) $(N) $(K)
+	ncu --metrics "$(MEMORY_METRICS)" -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm_memory ./$(TARGET) $(M) $(N) $(K)
+	ncu --metrics "$(OCCUPANCY_METRICS)" -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm_occupancy ./$(TARGET) $(M) $(N) $(K)
+	ncu --metrics "$(CACHE_METRICS)" -k gemm_kernel -o $(PROFILE_DIR)/profile_gemm_cache ./$(TARGET) $(M) $(N) $(K)
 
 # Profile all kernels (basic)
 profile-all: profile-naive profile-shared profile-register profile-prefetch
